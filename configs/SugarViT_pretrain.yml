@@ -1,0 +1,165 @@
+data:
+  module: plant_images.PlantImageDataModule
+  paths:
+    - data/data_tr09.h5
+  labels:
+    - npg
+    - gdd
+  image_channels:
+    - B
+    - G
+    - R
+    - REDGE
+    - NIR
+  augmentations:
+    train:
+      __class_fullname__: Compose
+      transforms:
+        - __class_fullname__: Flip
+          p: 0.5
+        - __class_fullname__: Blur
+          blur_limit:
+            - 3
+            - 9
+          p: 0.1
+        - __class_fullname__: Rotate
+          border_mode: 4
+          interpolation: 2
+          p: 0.25
+    validate:
+    test:
+  balanced_split_label:
+    - dataset
+  balanced_train_label:
+    - dataset
+  val_size: 0.2
+
+model:
+  name: SugarViT_pretrained
+  normalizer: !gs
+    - module: Standardizer
+      args:
+        clip: !!python/tuple [-6, 6]
+        per_channel: False
+    - module: Standardizer
+      args:
+        clip: !!python/tuple [-6, 6]
+        per_channel: True
+  backbone:
+    module: ViT
+    checkpoint:
+    freeze_layers: False
+    args:
+      params:
+        vit_type: vit
+        output_layer: last_hidden
+        hidden_size: 1024
+        num_hidden_layers: 8
+        num_attention_heads: 4
+        intermediate_size: 1024 # 512
+        hidden_act: gelu
+        hidden_dropout_prob: 0.02
+        attention_probs_dropout_prob: 0.02
+        initializer_range: 0.02
+        layer_norm_eps: !!float 1e-12
+        image_size: 144
+        patch_size: 12
+        num_channels: 5
+        qkv_bias: True
+        image_resolution: 0.3 # cm/px
+        image_channels: [B, G, R, REDGE, NIR]
+  mlp:
+    checkpoint:
+    freeze_layers: False
+    in_features: 1024
+    layer_sizes:
+      - 512
+      - 512
+      - 512
+    act_func: relu
+    norm: layer
+    dropout_prob: 0.2
+  ldl:
+    in_features: 512
+    individual_mlp:
+      layer_sizes:
+        - 256
+        - 256
+      act_func: relu
+      norm: layer
+      dropout_prob: 0.8
+    labels:
+      - npg
+      - gdd
+    quantization_steps:
+      - 100
+      - 100
+    reg_limits:
+      - !!python/tuple [-0.5, 11.5]
+      - !!python/tuple [-5, 3500]
+    sigmas:
+      - 0.3
+      - 100
+    norm: batch
+  optimizer:
+    loss_method: full_KL
+    module: AdamW
+    args:
+      lr: 0.0005
+      weight_decay: 0.1
+  lr_scheduler:
+    module: CyclicLR
+    interval: step
+    args:
+      base_lr: 0.0005
+      max_lr: 0.001
+      step_size_up: 500
+      step_size_down: 500
+      mode: exp_range
+      gamma: 0.9999
+      cycle_momentum: False
+
+training:
+  chkpt_dir: checkpoints/
+  log_dir: logging/.aim
+  seed: 0
+  batch_size_per_gpu: 512
+  callbacks:
+    - module: EarlyStopping
+      args:
+        monitor: val_loss
+        patience: 8
+    - module: ModelCheckpoint # best checkpoints regarding validation loss
+      args:
+        monitor: val_loss
+        filename: model_{epoch:03d}-{val_loss:.6f}
+        save_top_k: 1
+        mode: min
+        save_weights_only: True
+    - module: ModelCheckpoint # best checkpoints regarding validation npg MDO
+      args:
+        monitor: val_MDO_npg
+        filename: model_{epoch:03d}-{val_MDO_npg:.6f}
+        save_top_k: 1
+        mode: max
+        save_weights_only: True
+    - module: ModelCheckpoint # best checkpoints regarding validation gdd MDO
+      args:
+        monitor: val_MDO_gdd
+        filename: model_{epoch:03d}-{val_MDO_gdd:.6f}
+        save_top_k: 1
+        mode: max
+        save_weights_only: True
+    # - module: ModelCheckpoint # latest checkpoints
+    #   args:
+    #     monitor: global_step
+    #     filename: model_latest_{epoch:03d}-{global_step:0g}
+    #     every_n_train_steps: 100
+    #     mode: max
+    #     save_top_k: 1
+  profiler:
+    module: SimpleProfiler
+    args:
+      filename: profiler_result
+  trainer_args:
+    log_every_n_steps: 1

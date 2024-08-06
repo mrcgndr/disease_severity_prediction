@@ -1,0 +1,151 @@
+data:
+  module: plant_images.PlantImageDataModule
+  paths:
+    - data/data_tr09.h5
+  labels:
+    - ds
+  image_channels:
+    - B
+    - G
+    - R
+    - REDGE
+    - NIR
+  augmentations:
+    train:
+      __class_fullname__: Compose
+      transforms:
+        - __class_fullname__: Flip
+          p: 0.5
+        - __class_fullname__: Blur
+          blur_limit:
+            - 3
+            - 9
+          p: 0.1
+        - __class_fullname__: Rotate
+          border_mode: 4
+          interpolation: 2
+          p: 0.25
+    validate:
+    test:
+  balanced_split_label:
+    - ds
+    - dataset
+  balanced_train_label:
+    - ds
+    - dataset
+  val_size: 0.2
+
+model:
+  name: SugarViT_normtest
+  normalizer: !gs
+    - module: Standardizer
+      args:
+        clip: !!python/tuple [-6, 6]
+        per_channel: True
+    - module: Standardizer
+      args:
+        clip: !!python/tuple [-6, 6]
+        per_channel: False
+    - module: HistogramEqualizer
+      args:
+        nbins: 512
+        target_domain: !!python/tuple [-1, 1]
+        per_channel: True
+    - module: HistogramEqualizer
+      args:
+        nbins: 512
+        target_domain: !!python/tuple [-1, 1]
+        per_channel: False
+  backbone:
+    module: ViT
+    checkpoint:
+    freeze_layers: False
+    args:
+      params:
+        vit_type: vit
+        output_layer: last_hidden
+        hidden_size: 512
+        num_hidden_layers: 4
+        num_attention_heads: 4
+        intermediate_size: 512
+        hidden_act: gelu
+        hidden_dropout_prob: 0.02
+        attention_probs_dropout_prob: 0.02
+        initializer_range: 0.02
+        layer_norm_eps: !!float 1e-12
+        image_size: 144
+        patch_size: 12
+        num_channels: 5
+        qkv_bias: True
+        image_resolution: 0.3 # cm/px
+        image_channels: [B, G, R, REDGE, NIR]
+  mlp:
+    checkpoint:
+    freeze_layers: False
+    in_features: 512
+    layer_sizes:
+      - 512
+      - 512
+      - 512
+    act_func: relu
+    norm: layer
+    dropout_prob: 0.2
+  ldl:
+    in_features: 512
+    individual_mlp:
+      layer_sizes:
+        - 256
+        - 256
+      act_func: relu
+      norm: layer
+      dropout_prob: 0.8
+    labels:
+      - ds
+    quantization_steps:
+      - 131
+    reg_limits:
+      - !!python/tuple [-2.0, 11.0] # DS
+    sigmas:
+      - 0.6
+    norm: batch
+  optimizer:
+    loss_method: full_KL
+    module: AdamW
+    args:
+      lr: 0.001
+      weight_decay: 0.1
+
+training:
+  chkpt_dir: checkpoints/
+  log_dir: logging/.aim
+  seed: !gs [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  batch_size_per_gpu: 512
+  callbacks:
+    - module: ModelCheckpoint # best checkpoints
+      args:
+        monitor: val_loss
+        filename: model_{epoch:03d}-{val_loss:.6f}
+        save_top_k: 1
+        mode: min
+        save_weights_only: True
+    - module: ModelCheckpoint # best checkpoints regarding validation DS MDO
+      args:
+        monitor: val_MDO_ds
+        filename: model_{epoch:03d}-{val_MDO_ds:.6f}
+        save_top_k: 1
+        mode: max
+        save_weights_only: True
+    - module: ModelCheckpoint # latest checkpoints
+      args:
+        monitor: global_step
+        filename: model_latest_{epoch:03d}-{global_step:0g}
+        every_n_epochs: 1
+        mode: max
+        save_top_k: 1
+  profiler:
+    module: SimpleProfiler
+    args:
+      filename: profiler_result
+  trainer_args:
+    max_epochs: 100
+    log_every_n_steps: 1
